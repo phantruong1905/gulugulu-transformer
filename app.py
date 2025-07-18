@@ -14,7 +14,6 @@ from model.dual_transformer import *
 from scripts.train_test_dual_transformer import *
 from scripts.test_backtest import SimpleTradingAlgorithm
 
-
 # Disable matplotlib GUI backend for Streamlit
 plt.switch_backend('Agg')
 
@@ -55,11 +54,11 @@ def run_backtest(ticker, current_date):
     if os.path.exists(pooled_data_path):
         os.remove(pooled_data_path)
 
-    # Fetch data
+    # Fetch data from 2017 (more history for better features)
     fetch_stock_data(
         data_path=data_path,
         stocks=stocks_to_test,
-        start_date="2015-01-01",
+        start_date="2017-01-01",  # Changed to 2017
         end_date=current_date,
         output_filename=pooled_data_filename
     )
@@ -68,110 +67,209 @@ def run_backtest(ticker, current_date):
 
     # Filter data for the specific ticker and add technical indicators
     df_filtered = df_all_stocks[df_all_stocks['Symbol'] == ticker].copy()
-
-    # Add technical indicators to the filtered data
     df_filtered = add_technical_indicators(df_filtered)
     df_filtered = add_pivot_features(df_filtered)
     df_filtered = calculate_foundation(df_filtered)
 
-    # Step 2: Prepare data for backtesting and inference using the new function
-    try:
-        X_sequences, y_sequences, sequence_dates, is_inference, X_mean, X_std, y_mean, y_std = prepare_backtest_inference_data(
-            df_filtered,
-            seq_len=config.seq_len,
-            pred_len=config.pred_len,
-            level=2,
-            start_date='2024-01-01'
-        )
-    except Exception as e:
-        st.error(f"Error preparing data: {str(e)}")
-        return None
+    # Convert dates and sort
+    df_filtered['Date'] = pd.to_datetime(df_filtered['Date'])
+    df_filtered = df_filtered.sort_values('Date').reset_index(drop=True)
 
-    # Step 3: Initialize model
+    # Step 2: Sequential daily processing
+    start_date = pd.to_datetime('2024-01-01')
+    end_date = pd.to_datetime(current_date)
+
+    # Initialize device and model ONCE at the beginning
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    input_dim = X_sequences.shape[2]
-    wavelet_levels = X_sequences.shape[-1]
-    model = CleanWaveletTransformer(
-        input_dim=input_dim,
-        wavelet_levels=wavelet_levels,
-        d_model=64,
-        nhead=2,
-        num_layers=3,
-        drop_out=0.5,
-        pred_len=config.pred_len
-    )
-
-    # Step 4: Use the existing test function to get predictions
     checkpoint_path = "trained_wavelet_model.pt"
     if not os.path.exists(checkpoint_path):
         st.error(f"Model checkpoint '{checkpoint_path}' not found. Please train the model first.")
         return None
 
-    try:
-        # Use the existing test_wavelet_model function
-        all_preds, all_targets = test_wavelet_model(
-            df_filtered, model, X_sequences, y_sequences, config, device, checkpoint_path
-        )
+    # Load model checkpoint first to get dimensions
+    state_dict = torch.load(checkpoint_path, map_location=device, weights_only=True)
 
-        # Convert to numpy if they're tensors
-        if hasattr(all_preds, 'numpy'):
-            predictions = all_preds.numpy()
-        else:
-            predictions = all_preds
+    # Initialize model outside the loop
+    model = None
+    model_initialized = False
 
-        if hasattr(all_targets, 'numpy'):
-            targets = all_targets.numpy()
-        else:
-            targets = all_targets
-
-        # Unscale predictions and targets
-        predictions_unscaled = predictions * y_std + y_mean
-        y_sequences_unscaled = targets * y_std + y_mean
-
-    except Exception as e:
-        st.error(f"Error running test function: {str(e)}")
-        return None
-
-    # Step 5: Prepare prediction sequences for trading
-    prediction_sequences = []
-
-    for i in range(len(predictions_unscaled)):
-        pred_array = predictions_unscaled[i]
-        if isinstance(pred_array, np.ndarray):
-            pred_list = pred_array.flatten().tolist()
-        elif isinstance(pred_array, (int, float)):
-            pred_list = [pred_array]
-        else:
-            pred_list = list(pred_array)
-
-        prediction_sequences.append({
-            "date": str(sequence_dates[i].date()) if hasattr(sequence_dates[i], 'date') else str(sequence_dates[i]),
-            "symbol": ticker,
-            "y_pred": pred_list
-        })
-
-    # Step 6: Run trading simulation
+    # Initialize trader
     trader = SimpleTradingAlgorithm(
-        min_hold_days=5,
+        min_hold_days=2,
         max_hold_days=10,
         strong_signal_threshold=0.04,
         stop_loss=-0.05
     )
 
-    summary = trader.run_trading(prediction_sequences, df_filtered)
+    # Results storage
+    all_predictions = []
+    all_targets = []
+    all_dates = []
+    prediction_sequences = []
+
+    # Process each day sequentially
+    current_test_date = start_date
+    while current_test_date <= end_date:
+        # Get data only up to current test date
+        data_up_to_date = df_filtered[df_filtered['Date'] <= current_test_date].copy()
+
+        if len(data_up_to_date) < config.seq_len + 10:  # Need minimum data
+            current_test_date += pd.Timedelta(days=1)
+            continue
+
+        try:
+            # Create single sequence ending at current_test_date
+            # Check if we have enough data for a sequence
+            if len(data_up_to_date) < config.seq_len:
+                current_test_date += pd.Timedelta(days=1)
+                continue
+
+            # Manually create single sequence for efficiency
+            # Apply same preprocessing as in prepare_backtest_inference_data
+            df_work = data_up_to_date.copy()
+            df_work['Date'] = pd.to_datetime(df_work['Date'])
+            df_work = df_work.set_index('Date').sort_index()
+
+            # Define features (same as in prepare_backtest_inference_data)
+            base_features = ['Open', 'High', 'Low', 'Adj Close', 'Volume']
+            technical_features = ['OBV', 'MACD', 'Signal', 'Histogram', 'RSI'] + \
+                                 [f'MA{w}' for w in [10, 20, 50, 100, 200]]
+            pivot_features = ['dist_to_P', 'dist_to_R1', 'dist_to_R2', 'dist_to_R3',
+                              'dist_to_S1', 'dist_to_S2', 'dist_to_S3']
+            foundation_features = ['Short_Term_Foundation_Days', 'Long_Term_Foundation_Days']
+
+            # Apply same preprocessing
+            features = df_work[base_features].copy()
+            features = features.pct_change().replace([np.inf, -np.inf], np.nan)
+
+            # Add technical indicators
+            for feature in technical_features + pivot_features + foundation_features:
+                if feature in df_work.columns:
+                    features[feature] = df_work[feature]
+
+            # Create target
+            returns = df_work['Adj Close'].pct_change().replace([np.inf, -np.inf], np.nan)
+            trend = returns.rolling(window=10, min_periods=1).mean()
+            target = returns - trend
+
+            # Combine and clean
+            data = features.join(pd.DataFrame({'target': target}), how='inner').dropna()
+
+            # Clean and clip features
+            for col in data.columns:
+                if col != 'target':
+                    data[col] = data[col].ffill().bfill().fillna(0)
+                    if col in base_features:
+                        lower = data[col].quantile(0.01)
+                        upper = data[col].quantile(0.99)
+                        data[col] = data[col].clip(lower, upper)
+
+            if len(data) < config.seq_len:
+                current_test_date += pd.Timedelta(days=1)
+                continue
+
+            # Create single sequence (last seq_len days)
+            feat_cols = [col for col in data.columns if col != 'target']
+            x = data[feat_cols].values
+            y = data['target'].values
+
+            # Take the last sequence
+            X_seq = x[-config.seq_len:].reshape(1, config.seq_len, -1)  # [1, seq_len, features]
+            y_seq = y[-1:].reshape(1, 1)  # [1, 1] - just current target
+            seq_date = data.index[-1]  # Current date
+
+            # Compute normalization from this sequence
+            X_mean = np.mean(X_seq, axis=1, keepdims=True)  # [1, 1, features]
+            X_std = np.std(X_seq, axis=1, keepdims=True) + 1e-8
+            y_mean = np.mean(y_seq)
+            y_std = np.std(y_seq) + 1e-8
+
+            # Normalize
+            X_seq = (X_seq - X_mean) / X_std
+
+            # Apply wavelet decomposition
+            X_seq = modwt_decompose(X_seq, level=2)  # [1, seq_len, features, levels]
+
+            # Initialize model only once when we have the first sequence
+            if not model_initialized:
+                input_dim = X_seq.shape[2]
+                wavelet_levels = X_seq.shape[-1]
+                model = CleanWaveletTransformer(
+                    input_dim=input_dim,
+                    wavelet_levels=wavelet_levels,
+                    d_model=64,
+                    nhead=2,
+                    num_layers=3,
+                    drop_out=0.5,
+                    pred_len=config.pred_len
+                )
+
+                # Load model weights
+                model.load_state_dict(state_dict)
+                model.to(device)  # Move model to device
+                model.eval()
+                model_initialized = True
+
+            # Make prediction - ENSURE ALL TENSORS ARE ON THE SAME DEVICE
+            with torch.no_grad():
+                # Convert to tensor and move to device
+                X_tensor = torch.FloatTensor(X_seq).to(device)
+
+                # Make prediction
+                prediction = model(X_tensor)
+
+                # Move prediction back to CPU for numpy conversion
+                prediction = prediction.cpu().numpy()
+
+            # Unscale prediction
+            prediction_unscaled = prediction * y_std + y_mean
+            y_unscaled = y_seq * y_std + y_mean
+
+            # Store results
+            all_predictions.append(prediction_unscaled[0])
+            all_targets.append(y_unscaled[0])
+            all_dates.append(seq_date)
+
+            # Create prediction sequence for trading
+            pred_array = prediction_unscaled[0]
+            if isinstance(pred_array, np.ndarray):
+                pred_list = pred_array.flatten().tolist()
+            else:
+                pred_list = [pred_array]
+
+            prediction_sequences.append({
+                "date": str(seq_date.date()) if hasattr(seq_date, 'date') else str(seq_date),
+                "symbol": ticker,
+                "y_pred": pred_list
+            })
+
+            # Process trading decision for this day
+            trader.process_prediction(prediction_sequences[-1], data_up_to_date)
+
+        except Exception as e:
+            st.warning(f"Skipping date {current_test_date}: {str(e)}")
+            logging.error(f"Error processing date {current_test_date}: {str(e)}")
+
+        current_test_date += pd.Timedelta(days=1)
+
+    # Convert results to arrays
+    all_predictions = np.array(all_predictions)
+    all_targets = np.array(all_targets)
+    all_dates = np.array(all_dates)
+
+    # Create final summary
+    summary = trader.get_performance_summary()
     trades_df = pd.DataFrame(trader.trade_history)
 
-    # Separate backtest and inference results
-    backtest_mask = ~is_inference
-    inference_mask = is_inference
+    # Separate backtest and inference (last few predictions without true targets)
+    # For now, treat all as backtest since we're doing sequential processing
+    backtest_predictions = all_predictions
+    backtest_targets = all_targets
+    backtest_dates = all_dates
 
-    backtest_predictions = predictions_unscaled[backtest_mask] if np.any(backtest_mask) else np.array([])
-    backtest_targets = y_sequences_unscaled[backtest_mask] if np.any(backtest_mask) else np.array([])
-    backtest_dates = sequence_dates[backtest_mask] if np.any(backtest_mask) else np.array([])
-
-    inference_predictions = predictions_unscaled[inference_mask] if np.any(inference_mask) else np.array([])
-    inference_dates = sequence_dates[inference_mask] if np.any(inference_mask) else np.array([])
+    # Inference would be predictions beyond current_date (none in this case)
+    inference_predictions = np.array([])
+    inference_dates = np.array([])
 
     return {
         'summary': summary,
@@ -187,7 +285,7 @@ def run_backtest(ticker, current_date):
         },
         'trader': trader,
         'df_filtered': df_filtered,
-        'test_start_date': backtest_dates[0] if len(backtest_dates) > 0 else sequence_dates[0]
+        'test_start_date': backtest_dates[0] if len(backtest_dates) > 0 else start_date
     }
 
 

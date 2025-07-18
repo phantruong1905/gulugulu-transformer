@@ -287,7 +287,7 @@ def train_wavelet_transformer(model, X_train, y_train, X_valid, y_valid, X_test,
 
 
 def test_wavelet_model(df, model, X_test, y_test, config, device, checkpoint_path="trained_wavelet_model.pt"):
-    print("📦 Loading model checkpoint...")
+    #print("📦 Loading model checkpoint...")
     model = model.to(device)
     state_dict = torch.load(checkpoint_path, map_location=device, weights_only=True)
     model.load_state_dict(state_dict)
@@ -306,7 +306,7 @@ def test_wavelet_model(df, model, X_test, y_test, config, device, checkpoint_pat
     total_mse_loss = 0.0
     total_da = 0.0
 
-    print(f"🧪 Testing on {len(test_dataset)} samples")
+    #print(f"🧪 Testing on {len(test_dataset)} samples")
 
     all_preds = []
     all_targets = []
@@ -334,51 +334,51 @@ def test_wavelet_model(df, model, X_test, y_test, config, device, checkpoint_pat
     all_targets = torch.cat(all_targets, dim=0)
     output_std = torch.std(all_preds).item()
 
-    print(f"\n📊 Final Test Results:")
-    print(f"Directional Loss: {avg_dir_loss:.6f}")
-    print(f"MSE Loss:         {avg_mse_loss:.6f}")
-    print(f"Directional Acc.: {avg_da:.3f}")
-    print(f"Output Std:       {output_std:.4f}")
-    print(f"HELOOOO:       {all_preds.shape}")
-    print(all_preds[0])
+    # print(f"\n📊 Final Test Results:")
+    # print(f"Directional Loss: {avg_dir_loss:.6f}")
+    # print(f"MSE Loss:         {avg_mse_loss:.6f}")
+    # print(f"Directional Acc.: {avg_da:.3f}")
+    # print(f"Output Std:       {output_std:.4f}")
+    # print(f"HELOOOO:       {all_preds.shape}")
+    # print(all_preds[0])
 
     # Plot results
-    #plot_test_results(y_pred=all_preds, y_true=all_targets)
+    plot_test_results(y_pred=all_preds, y_true=all_targets)
 
-    # # Simple plotting for first time step only
-    # num_samples, tgt_len = all_preds.shape  # e.g., (280, 10)
-    #
-    # # Get the last num_samples of actual close prices (these are the starting points)
-    # historical_prices = df['Adj Close'].values[-num_samples:]
-    #
-    # # Take only the first time step predictions and convert to percentage
-    # first_step_preds = all_preds[:, 0].numpy() / 100.0  # Convert to actual percentage
-    #
-    # # Calculate predicted prices (each based on previous day's actual price)
-    # predicted_prices = np.zeros(num_samples)
-    # for i in range(num_samples):
-    #     if i == 0:
-    #         # For first prediction, we need a base price (could be the last known price before test period)
-    #         base_price = historical_prices[0]  # or use the last training price
-    #     else:
-    #         base_price = historical_prices[i - 1]  # Previous day's actual price
-    #
-    #     predicted_prices[i] = base_price * (1 + first_step_preds[i])
+    # Simple plotting for first time step only
+    num_samples, tgt_len = all_preds.shape  # e.g., (280, 10)
+
+    # Get the last num_samples of actual close prices (these are the starting points)
+    historical_prices = df['Adj Close'].values[-num_samples:]
+
+    # Take only the first time step predictions and convert to percentage
+    first_step_preds = all_preds[:, 0].numpy() / 100.0  # Convert to actual percentage
+
+    # Calculate predicted prices (each based on previous day's actual price)
+    predicted_prices = np.zeros(num_samples)
+    for i in range(num_samples):
+        if i == 0:
+            # For first prediction, we need a base price (could be the last known price before test period)
+            base_price = historical_prices[0]  # or use the last training price
+        else:
+            base_price = historical_prices[i - 1]  # Previous day's actual price
+
+        predicted_prices[i] = base_price * (1 + first_step_preds[i])
 
     # Plot
-    # plt.figure(figsize=(14, 8))
-    # plt.plot(range(num_samples), historical_prices,
-    #          label="Historical Close Price", color='black', linewidth=1.5)
-    # plt.plot(range(num_samples), predicted_prices,
-    #          label="Predicted Cumulative Price (1-step)", color='blue', linewidth=1.5)
-    #
-    # plt.title("Historical vs Predicted Cumulative Price - First Time Step")
-    # plt.xlabel("Time Index")
-    # plt.ylabel("Price")
-    # plt.legend()
-    # plt.grid(True, alpha=0.3)
-    # plt.tight_layout()
-    # plt.savefig("simple_cumulative_prediction.png", dpi=300)
+    plt.figure(figsize=(14, 8))
+    plt.plot(range(num_samples), historical_prices,
+             label="Historical Close Price", color='black', linewidth=1.5)
+    plt.plot(range(num_samples), predicted_prices,
+             label="Predicted Cumulative Price (1-step)", color='blue', linewidth=1.5)
+
+    plt.title("Historical vs Predicted Cumulative Price - First Time Step")
+    plt.xlabel("Time Index")
+    plt.ylabel("Price")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig("simple_cumulative_prediction.png", dpi=300)
     # plt.show()
 
     return all_preds, all_targets

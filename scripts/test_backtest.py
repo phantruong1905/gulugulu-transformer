@@ -27,7 +27,7 @@ class SimpleTradingAlgorithm:
         self.current_position = None  # {symbol, entry_date, entry_price, quantity, days_held, max_profit}
         self.cash = portfolio_size
         self.trade_history = []
-        self.profit_drawdown_threshold = 0.03  # 5% drawdown from peak profit
+        self.profit_drawdown_threshold = 0.05  # 5% drawdown from peak profit
 
     def calculate_signal_strength(self, y_pred: Union[List[float], float, np.ndarray]) -> float:
         """Calculate signal strength if there's consistent upward trend and directional agreement"""
@@ -128,7 +128,7 @@ class SimpleTradingAlgorithm:
             'signal_strength': signal_strength
         })
 
-        print(f"BUY: {date} | {symbol} | Price: ${price:.2f} | Qty: {quantity:.0f} | Signal: {signal_strength:.3f}")
+        #print(f"BUY: {date} | {symbol} | Price: ${price:.2f} | Qty: {quantity:.0f} | Signal: {signal_strength:.3f}")
 
     def execute_sell(self, price: float, date: str, reason: str):
         """Execute sell order"""
@@ -160,8 +160,8 @@ class SimpleTradingAlgorithm:
             'reason': reason
         })
 
-        print(
-            f"SELL: {date} | {position['symbol']} | Price: ${price:.2f} | P&L: ${profit_loss:.0f} | Return: {return_pct:.2%} | Days: {days_held} | Reason: {reason}")
+        #print(
+            #f"SELL: {date} | {position['symbol']} | Price: ${price:.2f} | P&L: ${profit_loss:.0f} | Return: {return_pct:.2%} | Days: {days_held} | Reason: {reason}")
 
         # Clear position
         self.current_position = None
@@ -199,18 +199,18 @@ class SimpleTradingAlgorithm:
 
     def run_trading(self, prediction_sequences: List[Dict], df_all_stocks: pd.DataFrame):
         """Run the trading algorithm on prediction sequences"""
-        print("Starting Simple Trading Algorithm")
-        print("=" * 60)
-        print(f"Strong Signal Threshold: {self.strong_signal_threshold:.3f}")
-        print(f"Min Hold Days: {self.min_hold_days}")
-        print(f"Max Hold Days: {self.max_hold_days}")
-        print(f"Stop Loss: {self.stop_loss:.2%}")
-        print(f"Profit Drawdown Threshold: {self.profit_drawdown_threshold:.2%}")
-        print("=" * 60)
+        # print("Starting Simple Trading Algorithm")
+        # print("=" * 60)
+        # print(f"Strong Signal Threshold: {self.strong_signal_threshold:.3f}")
+        # print(f"Min Hold Days: {self.min_hold_days}")
+        # print(f"Max Hold Days: {self.max_hold_days}")
+        # print(f"Stop Loss: {self.stop_loss:.2%}")
+        # print(f"Profit Drawdown Threshold: {self.profit_drawdown_threshold:.2%}")
+        # print("=" * 60)
 
         for i, sequence in enumerate(prediction_sequences):
-            print(f"\nProcessing Sequence {i + 1}: {sequence['date']}")
-            print(f"Predictions: {sequence['y_pred']}")
+            #print(f"\nProcessing Sequence {i + 1}: {sequence['date']}")
+            #print(f"Predictions: {sequence['y_pred']}")
 
             self.process_prediction(sequence, df_all_stocks)
 
@@ -220,10 +220,10 @@ class SimpleTradingAlgorithm:
                 current_date = datetime.strptime(sequence['date'], '%Y-%m-%d')
                 days_held = (current_date - entry_date).days
                 max_profit = self.current_position.get('max_profit', 0)
-                print(
-                    f"Current Position: {self.current_position['symbol']} | Days Held: {days_held} | Peak Profit: {max_profit:.2%}")
-            else:
-                print(f"Current Position: None | Cash: ${self.cash:.0f}")
+                #print(
+                    #f"Current Position: {self.current_position['symbol']} | Days Held: {days_held} | Peak Profit: {max_profit:.2%}")
+            #else:
+                #print(f"Current Position: None | Cash: ${self.cash:.0f}")
 
         return self.get_performance_summary()
 

@@ -519,12 +519,12 @@ def prepare_backtest_inference_data(df, seq_len, pred_len, level,
     # Apply wavelet decomposition
     X_sequences = modwt_decompose(X_sequences, level=level)
 
-    print(f"Created {len(X_sequences)} sequences:")
-    print(f"- Backtest sequences (with true targets): {np.sum(~is_inference)}")
-    print(f"- Inference sequences (padded targets): {np.sum(is_inference)}")
-    print(f"X_sequences shape: {X_sequences.shape}")
-    print(f"y_sequences shape: {y_sequences.shape}")
-    print(f"Applied quantile clipping (0.01, 0.99) to base features")
-    print(f"Computed normalization stats from input data")
+    # print(f"Created {len(X_sequences)} sequences:")
+    # print(f"- Backtest sequences (with true targets): {np.sum(~is_inference)}")
+    # print(f"- Inference sequences (padded targets): {np.sum(is_inference)}")
+    # print(f"X_sequences shape: {X_sequences.shape}")
+    # print(f"y_sequences shape: {y_sequences.shape}")
+    # print(f"Applied quantile clipping (0.01, 0.99) to base features")
+    # print(f"Computed normalization stats from input data")
 
     return X_sequences, y_sequences, sequence_dates, is_inference, X_mean, X_std, y_mean, y_std

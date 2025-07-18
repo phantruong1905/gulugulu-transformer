@@ -18,10 +18,6 @@ def fetch_stock_data(data_path, stocks, start_date, end_date, output_filename="p
             stock = vnstock.stock(symbol=symbol, source='VCI')
             df = stock.quote.history(start=start_date, end=end_date, interval='1D')
 
-            if df.empty or len(df) < 60:  # Add a minimum length check
-                logging.warning(f"Not enough data found for {symbol} (found {len(df)} rows), skipping...")
-                continue
-
             df.rename(columns={
                 "time": "Date", "close": "Adj Close", "high": "High",
                 "low": "Low", "open": "Open", "volume": "Volume"
