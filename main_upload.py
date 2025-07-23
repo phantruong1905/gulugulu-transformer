@@ -13,6 +13,8 @@ from model.dual_transformer import *
 from scripts.train_test_dual_transformer import *
 from scripts.test_backtest import SimpleTradingAlgorithm
 import warnings
+import shutil
+
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 
@@ -41,6 +43,31 @@ class DailyTradingEngine:
             raise FileNotFoundError("Checkpoint not found!")
         self.state_dict = torch.load(checkpoint_path, map_location=self.device, weights_only=True)
 
+    def update_latest_row_in_db(self, df: pd.DataFrame, ticker: str, target_date: str):
+        """Update the latest row for today's date in raw_stock_data"""
+        try:
+            # Filter for the specific ticker and target date
+            target_row = df[(df['Symbol'] == ticker) & (df['Date'] == target_date)].copy()
+
+            if target_row.empty:
+                print(f"No data found for {ticker} on {target_date}")
+                return
+
+            with self.engine.begin() as conn:
+                # Delete existing record for this ticker and date if it exists
+                conn.execute(
+                    text('DELETE FROM raw_stock_data WHERE "Symbol" = :symbol AND "Date" = :date'),
+                    {"symbol": ticker, "date": target_date}
+                )
+
+                # Insert the new record
+                target_row.to_sql("raw_stock_data", conn, if_exists="append", index=False)
+
+            print(f"Updated latest row for {ticker} on {target_date}")
+
+        except Exception as e:
+            print(f"Error updating latest row for {ticker}: {e}")
+
     def fetch_recent_data(self, ticker: str, target_date: str, days_back: int = 500):
         """Fetch only the data needed for the target date prediction"""
         # Calculate start date (go back enough days + buffer for weekends/holidays)
@@ -49,21 +76,20 @@ class DailyTradingEngine:
         start_date = start_dt.strftime("%Y-%m-%d")
 
         # Create temporary data directory
-        data_path = './temp_data'
+        data_path = f'./temp_data/{ticker}'  # unique folder per ticker
         os.makedirs(data_path, exist_ok=True)
 
         temp_file = os.path.join(data_path, f"temp_{ticker}_data.csv")
+
         if os.path.exists(temp_file):
             os.remove(temp_file)
 
-        # Fetch data
         fetch_stock_data(data_path, [ticker], start_date, target_date, f"temp_{ticker}_data.csv")
-        df = pd.read_csv(temp_file)
-        #print(f"[DEBUG] Raw fetched data for {ticker}: {df.shape[0]} rows, date range: {df['Date'].min()} to {df['Date'].max()}")
 
-        # Clean up temp file
-        os.remove(temp_file)
-        os.rmdir(data_path)
+        df = pd.read_csv(temp_file)
+        self.update_latest_row_in_db(df, ticker, target_date)
+        # Clean up
+        shutil.rmtree(data_path)  # ✅ removes all files and folder safely
 
         return df
 
@@ -232,7 +258,7 @@ class DailyTradingEngine:
                 # Get historical prices to find peak (including today's price)
                 historical_query = """
                 SELECT "Date", "Adj Close" FROM raw_stock_data 
-                WHERE 'Symbol' = %s 
+                WHERE "Symbol" = %s    
                 AND "Date" >= %s 
                 AND "Date" <= %s 
                 ORDER BY "Date"
@@ -248,7 +274,7 @@ class DailyTradingEngine:
                 peak_price = entry_price  # Start with entry price as peak
                 if not historical_prices.empty:
                     # Get all prices from entry date onwards
-                    all_prices = historical_prices['adj_close'].tolist()
+                    all_prices = historical_prices['Adj Close'].tolist()
                     peak_price = max(all_prices)
                     #print(f"[DEBUG] Price history since entry: {all_prices}")
                     #print(f"[DEBUG] Peak price found: {peak_price:.2f}")
@@ -488,7 +514,6 @@ class DailyTradingEngine:
             #traceback.#print_exc()
             return None
 
-
     def save_daily_results(self, ticker: str, date: str, prediction_data: dict, trading_action: str,
                            signal_strength: float, trader):
         """Save daily results to database"""
@@ -513,62 +538,130 @@ class DailyTradingEngine:
                 signal_df = pd.DataFrame([signal_data])
                 signal_df.to_sql("daily_signals", conn, if_exists="append", index=False)
 
-                # 2. Save trade if action was taken
-                if trader.trade_history:
-                    trade_record = trader.trade_history[-1]
-                    trade_date = trade_record["date"]
-                    trade_action = trade_record["action"]
-                    trade_symbol = trade_record["symbol"]
+                # 2. Determine what the "new action" should be
+                # trading_action comes from make_trading_decision_fixed and can be:
+                # - "BUY"
+                # - "SELL (reason)"
+                # - "HOLD"
 
-                    # Check existing trade
-                    existing_trade_query = """
-                        SELECT * FROM stock_trades 
-                        WHERE symbol = :symbol AND date = :date AND action = :action
-                    """
-                    existing_trade = pd.read_sql(
-                        text(existing_trade_query),
-                        conn,
-                        params={"symbol": trade_symbol, "date": trade_date, "action": trade_action}
+                if trading_action.startswith("SELL"):
+                    new_action = "SELL"
+                elif trading_action == "BUY":
+                    new_action = "BUY"
+                else:  # HOLD or any other case
+                    new_action = "HOLD"
+
+                #print(f"[DEBUG] Trading action: '{trading_action}' → New action: '{new_action}'")
+
+                # 3. Check for existing trades on this date for this symbol
+                existing_trade_query = """
+                    SELECT * FROM stock_trades 
+                    WHERE symbol = :symbol AND date = :date
+                    ORDER BY action  -- BUY first, then SELL
+                """
+                existing_trades = pd.read_sql(
+                    text(existing_trade_query),
+                    conn,
+                    params={"symbol": ticker, "date": date}
+                )
+
+                old_action = None
+                if not existing_trades.empty:
+                    # Take the first trade (there should only be one per day per symbol)
+                    old_action = existing_trades.iloc[0]["action"]
+                    print(f"[DEBUG] Found existing trade: {old_action} for {ticker} on {date}")
+
+
+                # 4. Apply your logic
+                if old_action is None:
+                    # No existing trade → insert new action if it's BUY or SELL
+                    if new_action in ["BUY", "SELL"]:
+                        if trader.trade_history:
+                            trade_record = trader.trade_history[-1]
+                            self._insert_trade_record(conn, trade_record)
+                            print(f"[DEBUG] ✅ Inserted new {new_action} trade")
+                        else:
+                            print(f"[DEBUG] ❌ No trade record to insert")
+
+                elif old_action == "SELL" and new_action == "HOLD":
+                    # Delete the SELL
+                    delete_result = conn.execute(
+                        text("DELETE FROM stock_trades WHERE symbol = :symbol AND date = :date AND action = 'SELL'"),
+                        {"symbol": ticker, "date": date}
                     )
+                    print(f"[DEBUG] ✅ SELL → HOLD: Deleted SELL trade ({delete_result.rowcount} rows)")
 
-                    # Decision logic
-                    if trade_action == "BUY":
-                        if not existing_trade.empty:
-                            print(f"[DEBUG] Skipping BUY: Trade already exists for {trade_symbol} on {trade_date}")
-                            return  # skip saving BUY
-                    elif trade_action == "SELL":
-                        if not existing_trade.empty:
-                            # Delete existing SELL to replace it
-                            conn.execute(
-                                text("""
-                                    DELETE FROM stock_trades 
-                                    WHERE symbol = :symbol AND date = :date AND action = :action
-                                """),
-                                {"symbol": trade_symbol, "date": trade_date, "action": trade_action}
-                            )
-                            print(f"[DEBUG] Replacing existing SELL for {trade_symbol} on {trade_date}")
+                elif old_action == "SELL" and new_action == "SELL":
+                    # Replace the SELL
+                    conn.execute(
+                        text("DELETE FROM stock_trades WHERE symbol = :symbol AND date = :date AND action = 'SELL'"),
+                        {"symbol": ticker, "date": date}
+                    )
+                    if trader.trade_history:
+                        trade_record = trader.trade_history[-1]
+                        self._insert_trade_record(conn, trade_record)
+                        #print(f"[DEBUG] ✅ SELL → SELL: Replaced SELL trade")
 
-                    # Save the trade
-                    trade_df = pd.DataFrame([{
-                        "date": trade_date,
-                        "action": trade_action,
-                        "symbol": trade_symbol,
-                        "price": trade_record["price"],
-                        "quantity": trade_record["quantity"],
-                        "cost": trade_record.get("cost"),
-                        "proceeds": trade_record.get("proceeds"),
-                        "profit_loss": trade_record.get("profit_loss"),
-                        "return_pct": trade_record.get("return_pct"),
-                        "days_held": trade_record.get("days_held"),
-                        "reason": trade_record.get("reason"),
-                        "signal_strength": trade_record.get("signal_strength")
-                    }])
-                    trade_df.to_sql("stock_trades", conn, if_exists="append", index=False)
-                    print(f"[DEBUG] Saved {trade_action} trade for {trade_symbol} on {trade_date}")
+                elif old_action == "BUY" and new_action == "BUY":
+                    # Do nothing
+                    print(f"[DEBUG] ⚪ BUY → BUY: No action needed")
 
+                elif old_action == "BUY" and new_action == "HOLD":
+                    # Delete the BUY
+                    delete_result = conn.execute(
+                        text("DELETE FROM stock_trades WHERE symbol = :symbol AND date = :date AND action = 'BUY'"),
+                        {"symbol": ticker, "date": date}
+                    )
+                    #print(f"[DEBUG] ✅ BUY → HOLD: Deleted BUY trade ({delete_result.rowcount} rows)")
+
+                elif old_action == "BUY" and new_action == "SELL":
+                    # This shouldn't happen in same day, but handle it
+                    # Delete BUY and insert SELL
+                    conn.execute(
+                        text("DELETE FROM stock_trades WHERE symbol = :symbol AND date = :date AND action = 'BUY'"),
+                        {"symbol": ticker, "date": date}
+                    )
+                    if trader.trade_history:
+                        trade_record = trader.trade_history[-1]
+                        self._insert_trade_record(conn, trade_record)
+                        print(f"[DEBUG] ✅ BUY → SELL: Replaced BUY with SELL")
+
+                elif old_action == "SELL" and new_action == "BUY":
+                    # This shouldn't happen in same day, but handle it
+                    # Delete SELL and insert BUY
+                    conn.execute(
+                        text("DELETE FROM stock_trades WHERE symbol = :symbol AND date = :date AND action = 'SELL'"),
+                        {"symbol": ticker, "date": date}
+                    )
+                    if trader.trade_history:
+                        trade_record = trader.trade_history[-1]
+                        self._insert_trade_record(conn, trade_record)
+                        print(f"[DEBUG] ✅ SELL → BUY: Replaced SELL with BUY")
+                else:
+                    print(f"[DEBUG] ❓ Unhandled case: {old_action} → {new_action}")
 
         except Exception as e:
             print(f"Error saving results for {ticker}: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _insert_trade_record(self, conn, trade_record):
+        """Helper method to insert a trade record"""
+        trade_df = pd.DataFrame([{
+            "date": trade_record["date"],
+            "action": trade_record["action"],
+            "symbol": trade_record["symbol"],
+            "price": trade_record["price"],
+            "quantity": trade_record["quantity"],
+            "cost": trade_record.get("cost"),
+            "proceeds": trade_record.get("proceeds"),
+            "profit_loss": trade_record.get("profit_loss"),
+            "return_pct": trade_record.get("return_pct"),
+            "days_held": trade_record.get("days_held"),
+            "reason": trade_record.get("reason"),
+            "signal_strength": trade_record.get("signal_strength")
+        }])
+        trade_df.to_sql("stock_trades", conn, if_exists="append", index=False)
 
 
 def run_daily_inference(tickers: list, target_date: str = None):
@@ -640,5 +733,6 @@ if __name__ == "__main__":
         # Thêm bừa không biết ngành gì
         'AGG', 'EVG', 'IJC', 'HAG', 'DXS', 'EVF', 'VTO', 'CTD', 'CTI', 'HHV', 'DDV', 'HNG', 'MCH', 'HVN'
     ]
-    current_date = '2025-07-18'
+    tickers_test = ['DPG']
+    current_date = date.today().strftime('%Y-%m-%d')
     results = run_daily_inference(tickers, current_date)
