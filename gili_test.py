@@ -268,7 +268,7 @@ def evaluate_agent_fixed(agent, test_samples):
     return results
 
 
-def plot_single_stock(df, symbol, use_dates=True, price_column='actual_price', save_dir="plots", save_fig=True):
+def plot_single_stock(df, symbol, use_dates=True, price_column='actual_price', save_dir="gili_actions_plots", save_fig=True):
     """Plot actions for a single stock (only price and actions, no cumulative rewards)"""
     symbol_data = df[df['symbol'] == symbol].copy()
 
@@ -464,7 +464,7 @@ def plot_actions_with_actual_prices(action_log, price_fetcher, symbols=None, max
 
     # Plot individual stocks
     if plot_individual:
-        print("Creating individual stock plots...")
+        print("Creating individual stock gili_actions_plots...")
         for symbol in symbols:
             plot_single_stock(df, symbol, use_dates, price_column)
 

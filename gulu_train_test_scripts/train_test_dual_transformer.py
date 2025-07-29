@@ -10,7 +10,7 @@ import math
 from loss.tdl import TanhDirectionalLoss
 
 
-def plot_test_results(y_pred, y_true, title_prefix="Test", smooth_scale=5.0, chunk_size=300, save_path="sequence.png"):
+def plot_test_results(y_pred, y_true, title_prefix="Test", smooth_scale=5.0, chunk_size=300, save_path="example_trend_prediction.png"):
     if hasattr(y_pred, "detach"):
         y_pred = y_pred.detach().cpu().numpy()
     if hasattr(y_true, "detach"):
@@ -378,7 +378,7 @@ def test_wavelet_model(df, model, X_test, y_test, config, device, checkpoint_pat
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig("simple_cumulative_prediction.png", dpi=300)
+    plt.savefig("example_1_step_prediction.png", dpi=300)
     # plt.show()
 
     return all_preds, all_targets

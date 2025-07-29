@@ -10,8 +10,8 @@ from sqlalchemy import text
 from src.load_data import fetch_stock_data
 from src.feature_engineering import *
 from model.dual_transformer import *
-from scripts.train_test_dual_transformer import *
-from scripts.test_backtest import SimpleTradingAlgorithm
+from gulu_train_test_scripts.train_test_dual_transformer import *
+from gulu_train_test_scripts.test_backtest import SimpleTradingAlgorithm
 import warnings
 import shutil
 
