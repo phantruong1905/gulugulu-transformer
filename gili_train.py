@@ -86,8 +86,8 @@ class ReplayBuffer:
         return len(self.buffer)
 
 
-class ImprovedDDQNTradingAgent:
-    """Improved Double Deep Q-Network Trading Agent with Position Management"""
+class DDQNTradingAgent:
+    """Double Deep Q-Network Trading Agent with Position Management"""
 
     def __init__(self, state_size, action_size=3, learning_rate=5e-5, gamma=0.95,
                  epsilon_start=0.9, epsilon_end=0.05, epsilon_decay=0.9995,
@@ -105,6 +105,10 @@ class ImprovedDDQNTradingAgent:
 
         # Position tracking - KEY IMPROVEMENT
         self.current_position = 0  # -1: Short, 0: Hold, 1: Long
+
+        # NEW: Track when we last bought (step counter)
+        self.last_buy_step = -999  # Initialize to allow immediate buying
+        self.current_step = 0  # Track current step
 
         # Device setup
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -167,7 +171,7 @@ class ImprovedDDQNTradingAgent:
 
     def _apply_position_logic(self, signal):
         """
-        Apply position management logic from the paper's Table 1
+        Apply position management logic from the paper's Table 1 with 2-day hold constraint
         signal: 0=SELL, 1=HOLD, 2=BUY
         Returns: actual action to execute
         """
@@ -183,8 +187,12 @@ class ImprovedDDQNTradingAgent:
                 return 2  # BUY
 
         elif pos == 1:  # Currently long
-            if signal == 0:  # SELL signal -> Close long
-                return 0  # SELL
+            if signal == 0:  # SELL signal -> Check 2-day constraint
+                # NEW: Check if 2 days have passed since last buy
+                if self.current_step - self.last_buy_step >= 2:
+                    return 0  # SELL (close long)
+                else:
+                    return 1  # HOLD (constraint violation)
             elif signal == 1:  # HOLD signal -> Hold long
                 return 1  # HOLD
             elif signal == 2:  # BUY signal -> Hold long (can't buy more)
@@ -213,11 +221,16 @@ class ImprovedDDQNTradingAgent:
                 self.current_position = 0
             elif self.current_position == 0:  # Open long
                 self.current_position = 1
+                # NEW: Track when we bought
+                self.last_buy_step = self.current_step
         # action == 1 (HOLD) doesn't change position
+
+        # NEW: Increment step counter
+        self.current_step += 1
 
     def calculate_reward(self, action, current_price, next_price, y_pred=None, future_returns=None):
         """
-        Improved reward calculation with position awareness and reduced overtrading penalty
+        Reward calculation with position awareness and reduced overtrading penalty
         """
         # Convert action to trading signal: 0=SELL(-1), 1=HOLD(0), 2=BUY(+1)
         action_value = action - 1  # Maps 0->-1, 1->0, 2->1
@@ -322,18 +335,17 @@ class ImprovedDDQNTradingAgent:
         if self.step_count % self.target_update == 0:
             self.target_network.load_state_dict(self.q_network.state_dict())
 
-        # Decay epsilon
-        if self.epsilon > self.epsilon_end:
-            self.epsilon *= self.epsilon_decay
-
         return loss.item()
 
-    def train_on_data(self, rl_samples, epochs=50):
+    def train_on_data(self, rl_samples, epochs=None):
         """Train agent on RL samples"""
         print(f"Training on {len(rl_samples)} samples for {epochs} epochs...")
 
         # Reset position for training
         self.current_position = 0
+        # NEW: Reset step counters for training
+        self.last_buy_step = -999
+        self.current_step = 0
 
         # Store all experiences
         actions_taken = []
@@ -368,26 +380,44 @@ class ImprovedDDQNTradingAgent:
             # Update learning rate
             self.scheduler.step()
 
+            # ADD THIS: Decay epsilon once per epoch instead of per step
+            if self.epsilon > self.epsilon_end:
+                self.epsilon *= self.epsilon_decay
+
             if epoch % 10 == 0:
                 print(f"Epoch {epoch}/{epochs}, Loss: {avg_loss:.4f}, Epsilon: {self.epsilon:.3f}")
 
         return total_losses
 
     def evaluate(self, rl_samples):
-        """Evaluate agent performance"""
+        """Evaluate agent performance and include Q-values for each action in action_log"""
         self.q_network.eval()
 
         # Reset position for evaluation
         self.current_position = 0
+        self.last_buy_step = -999
+        self.current_step = 0
 
         total_reward = 0
         actions_taken = []
         action_log = []
+        constraint_violations = 0
 
         with torch.no_grad():
             for sample in rl_samples:
+                # Convert state to tensor
+                state = torch.FloatTensor(sample['state']).unsqueeze(0).to(self.device)
+
+                # Compute Q-values for all actions
+                q_values = self.q_network(state).cpu().numpy().flatten()  # Shape: [3] for SELL, HOLD, BUY
+
                 # Get action with position management
-                action, _ = self.get_action_with_position_management(sample['state'], training=False)
+                action, raw_action = self.get_action_with_position_management(sample['state'], training=False)
+
+                # Check if this was a constraint violation
+                if (raw_action == 0 and self.current_position == 1 and
+                        self.current_step - self.last_buy_step < 2):
+                    constraint_violations += 1
 
                 # Calculate reward
                 reward = self.calculate_reward(
@@ -404,7 +434,7 @@ class ImprovedDDQNTradingAgent:
                 total_reward += reward
                 actions_taken.append(action)
 
-                # Log action
+                # Log action and Q-values
                 action_log.append({
                     'date': sample.get('date'),
                     'symbol': sample.get('symbol'),
@@ -412,10 +442,14 @@ class ImprovedDDQNTradingAgent:
                     'action_name': self.action_names[action],
                     'position': self.current_position,
                     'price': sample.get('current_price'),
-                    'reward': reward
+                    'reward': reward,
+                    'raw_action': raw_action,
+                    'days_since_buy': self.current_step - self.last_buy_step,
+                    'q_values': q_values.tolist(),  # Q-values for SELL, HOLD, BUY
+                    'estimated_q_value': q_values[raw_action]  # Q-value of the raw action
                 })
 
-        avg_reward = total_reward / len(rl_samples)
+        avg_reward = total_reward / len(rl_samples) if rl_samples else 0.0
 
         action_dist = {
             'SELL': actions_taken.count(0),
@@ -428,13 +462,15 @@ class ImprovedDDQNTradingAgent:
         print(f"Average Reward: {avg_reward:.4f}")
         print(f"Action Distribution: {action_dist}")
         print(f"Final Position: {self.current_position}")
+        print(f"Constraint Violations: {constraint_violations}")
 
         return {
             'total_reward': total_reward,
             'average_reward': avg_reward,
             'action_distribution': action_dist,
             'action_log': action_log,
-            'final_position': self.current_position
+            'final_position': self.current_position,
+            'constraint_violations': constraint_violations
         }
 
     def save_model(self, filepath):
@@ -445,7 +481,9 @@ class ImprovedDDQNTradingAgent:
             'optimizer_state_dict': self.optimizer.state_dict(),
             'epsilon': self.epsilon,
             'step_count': self.step_count,
-            'current_position': self.current_position
+            'current_position': self.current_position,
+            'last_buy_step': self.last_buy_step,  # NEW
+            'current_step': self.current_step  # NEW
         }, filepath)
         print(f"Model saved to {filepath}")
 
@@ -458,6 +496,8 @@ class ImprovedDDQNTradingAgent:
         self.epsilon = checkpoint['epsilon']
         self.step_count = checkpoint['step_count']
         self.current_position = checkpoint.get('current_position', 0)
+        self.last_buy_step = checkpoint.get('last_buy_step', -999)  # NEW
+        self.current_step = checkpoint.get('current_step', 0)  # NEW
         print(f"Model loaded from {filepath}")
 
 
@@ -483,15 +523,15 @@ def train_trading_agent(train_samples, test_samples=None, epochs=30):
     print(f"Test samples: {len(test_samples)}")
 
     # Create improved agent
-    agent = ImprovedDDQNTradingAgent(
+    agent = DDQNTradingAgent(
         state_size=state_size,
-        learning_rate=5e-5,  # Lower learning rate
+        learning_rate=1e-5,  # Lower learning rate
         gamma=0.95,  # Slightly lower discount
         epsilon_start=0.9,  # Higher initial exploration
         epsilon_end=0.05,  # Higher final exploration
-        epsilon_decay=0.9995,  # Slower decay
-        batch_size=32,  # Smaller batches
-        target_update=500  # More frequent updates
+        epsilon_decay=0.98,  # Faster decay
+        batch_size=64,  # Smaller batches
+        target_update=1000  # More frequent updates
     )
 
     # Train
