@@ -13,6 +13,6 @@ def classify_signal(q_conf):
     return rank_table.iloc[closest_idx]
 
 
-new_q = 0.52
+new_q = 0.1
 result = classify_signal(new_q)
 print(result)

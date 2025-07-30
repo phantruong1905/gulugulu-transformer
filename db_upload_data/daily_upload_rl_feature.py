@@ -375,7 +375,7 @@ if __name__ == "__main__":
         'AGG', 'EVG', 'IJC', 'HAG', 'DXS', 'EVF', 'VTO', 'CTD', 'CTI', 'HHV', 'DDV', 'HNG', 'MCH', 'HVN'
     ]
 
-    current_date = "2025-07-18"  # or use None for today
+    current_date = "2025-07-21"  # or use None for today
 
     # Run batch inference
     results = run_production_inference_batch(stock_list, current_date)

@@ -525,7 +525,7 @@ def main():
     print(f"State size: {state_size}")
 
     # === Filter by date only (no symbol filtering) ===
-    cutoff_date = datetime.strptime("2025-07-17", "%Y-%m-%d")  # or any other date
+    cutoff_date = datetime.strptime("2025-07-18", "%Y-%m-%d")  # or any other date
 
     # Filter test samples by date only
     filtered_test_samples = [
