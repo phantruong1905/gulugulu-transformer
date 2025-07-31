@@ -12,6 +12,7 @@ import pickle
 # Experience tuple for replay buffer
 Experience = namedtuple('Experience', ['state', 'action', 'reward', 'next_state', 'done'])
 
+
 class TradingDataset(Dataset):
     """Custom Dataset for trading experiences"""
 
@@ -86,7 +87,7 @@ class ReplayBuffer:
 
 
 class DDQNTradingAgent:
-    """Double Deep Q-Network Trading Agent with Position Management"""
+    """Double Deep Q-Network Trading Agent with Position Management - FIXED DATA LEAKAGE"""
 
     def __init__(self, state_size, action_size=3, learning_rate=5e-5, gamma=0.95,
                  epsilon_start=0.9, epsilon_end=0.05, epsilon_decay=0.9995,
@@ -101,13 +102,6 @@ class DDQNTradingAgent:
         self.epsilon_decay = epsilon_decay
         self.batch_size = batch_size
         self.target_update = target_update
-
-        # Position tracking - KEY IMPROVEMENT
-        self.current_position = 0  # -1: Short, 0: Hold, 1: Long
-
-        # NEW: Track when we last bought (step counter)
-        self.last_buy_step = -999  # Initialize to allow immediate buying
-        self.current_step = 0  # Track current step
 
         # Device setup
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -138,10 +132,32 @@ class DDQNTradingAgent:
 
         print(f"Initialized agent on {self.device}")
 
-    def get_action_with_position_management(self, state, training=True):
+    def reset_position_state(self):
+        """Reset position state - call this before each new evaluation sequence"""
+        self.current_position = 0  # -1: Short, 0: Hold, 1: Long
+        self.last_buy_step = -999  # Initialize to allow immediate buying
+        self.current_step = 0  # Track current step
+
+    def get_action_with_position_management(self, state, training=True, position_state=None):
         """
-        Get action with proper position management logic (like Table 1 in paper)
+        Get action with proper position management logic
+
+        Args:
+            state: Current state
+            training: Whether in training mode
+            position_state: Optional dict with {'position': int, 'last_buy_step': int, 'current_step': int}
+                          If provided, uses this instead of self state (prevents data leakage)
         """
+        # Use provided position state or internal state
+        if position_state is not None:
+            current_position = position_state['position']
+            last_buy_step = position_state['last_buy_step']
+            current_step = position_state['current_step']
+        else:
+            current_position = self.current_position
+            last_buy_step = self.last_buy_step
+            current_step = self.current_step
+
         # Get raw action from neural network
         if training and random.random() < self.epsilon:
             raw_action = random.randint(0, self.action_size - 1)
@@ -149,7 +165,8 @@ class DDQNTradingAgent:
             if isinstance(state, np.ndarray):
                 state_tensor = torch.FloatTensor(state).unsqueeze(0)
             else:
-                state_tensor = state.unsqueeze(0) if state.dim() == 1 else state
+                state_tensor = torch.tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0) if isinstance(
+                    state, list) else state.unsqueeze(0) if state.dim() == 1 else state
 
             state_tensor = state_tensor.to(self.device, non_blocking=True)
 
@@ -163,18 +180,16 @@ class DDQNTradingAgent:
             if training:
                 self.q_network.train()
 
-        # Apply position management logic (from paper's Table 1)
-        actual_action = self._apply_position_logic(raw_action)
+        # Apply position management logic
+        actual_action = self._apply_position_logic(raw_action, current_position, last_buy_step, current_step)
 
         return actual_action, raw_action
 
-    def _apply_position_logic(self, signal):
+    def _apply_position_logic(self, signal, current_position, last_buy_step, current_step):
         """
-        Apply position management logic from the paper's Table 1 with 2-day hold constraint
-        signal: 0=SELL, 1=HOLD, 2=BUY
-        Returns: actual action to execute
+        Apply position management logic with explicit position state (no self reference)
         """
-        pos = self.current_position
+        pos = current_position
 
         # Position management logic from paper
         if pos == 0:  # Currently holding cash
@@ -187,8 +202,8 @@ class DDQNTradingAgent:
 
         elif pos == 1:  # Currently long
             if signal == 0:  # SELL signal -> Check 2-day constraint
-                # NEW: Check if 2 days have passed since last buy
-                if self.current_step - self.last_buy_step >= 2:
+                # Check if 2 days have passed since last buy
+                if current_step - last_buy_step >= 2:
                     return 0  # SELL (close long)
                 else:
                     return 1  # HOLD (constraint violation)
@@ -207,8 +222,31 @@ class DDQNTradingAgent:
 
         return 1  # Default to HOLD
 
+    def update_position_state(self, action, position_state):
+        """Update position state and return new state (functional approach)"""
+        new_state = position_state.copy()
+
+        if action == 0:  # SELL
+            if new_state['position'] == 1:  # Close long
+                new_state['position'] = 0
+            elif new_state['position'] == 0:  # Open short
+                new_state['position'] = -1
+
+        elif action == 2:  # BUY
+            if new_state['position'] == -1:  # Close short
+                new_state['position'] = 0
+            elif new_state['position'] == 0:  # Open long
+                new_state['position'] = 1
+                # Track when we bought
+                new_state['last_buy_step'] = new_state['current_step']
+        # action == 1 (HOLD) doesn't change position
+
+        # Increment step counter
+        new_state['current_step'] += 1
+        return new_state
+
     def update_position(self, action):
-        """Update current position based on executed action"""
+        """Update internal position based on executed action (for training)"""
         if action == 0:  # SELL
             if self.current_position == 1:  # Close long
                 self.current_position = 0
@@ -220,17 +258,14 @@ class DDQNTradingAgent:
                 self.current_position = 0
             elif self.current_position == 0:  # Open long
                 self.current_position = 1
-                # NEW: Track when we bought
                 self.last_buy_step = self.current_step
         # action == 1 (HOLD) doesn't change position
 
-        # NEW: Increment step counter
+        # Increment step counter
         self.current_step += 1
 
     def calculate_reward(self, action, current_price, next_price, y_pred=None, future_returns=None):
-        """
-        Reward calculation with position awareness and reduced overtrading penalty
-        """
+        """Reward calculation with position awareness and reduced overtrading penalty"""
         # Convert action to trading signal: 0=SELL(-1), 1=HOLD(0), 2=BUY(+1)
         action_value = action - 1  # Maps 0->-1, 1->0, 2->1
 
@@ -341,10 +376,7 @@ class DDQNTradingAgent:
         print(f"Training on {len(rl_samples)} samples for {epochs} epochs...")
 
         # Reset position for training
-        self.current_position = 0
-        # NEW: Reset step counters for training
-        self.last_buy_step = -999
-        self.current_step = 0
+        self.reset_position_state()
 
         # Store all experiences
         actions_taken = []
@@ -379,7 +411,7 @@ class DDQNTradingAgent:
             # Update learning rate
             self.scheduler.step()
 
-            # ADD THIS: Decay epsilon once per epoch instead of per step
+            # Decay epsilon once per epoch instead of per step
             if self.epsilon > self.epsilon_end:
                 self.epsilon *= self.epsilon_decay
 
@@ -388,14 +420,31 @@ class DDQNTradingAgent:
 
         return total_losses
 
-    def evaluate(self, rl_samples):
-        """Evaluate agent performance and include Q-values for each action in action_log"""
+    def evaluate(self, rl_samples, calculate_rewards=False, reset_position=True):
+        """
+        Evaluate agent performance - FIXED DATA LEAKAGE
+
+        Args:
+            rl_samples: List of RL samples to evaluate on
+            calculate_rewards: If True, calculate rewards (for validation), if False, pure inference
+            reset_position: If True, reset position at start (default). Set False for continuing sequences.
+        """
         self.q_network.eval()
 
-        # Reset position for evaluation
-        self.current_position = 0
-        self.last_buy_step = -999
-        self.current_step = 0
+        # Initialize position state
+        if reset_position:
+            position_state = {
+                'position': 0,
+                'last_buy_step': -999,
+                'current_step': 0
+            }
+        else:
+            # Continue from current internal state
+            position_state = {
+                'position': self.current_position,
+                'last_buy_step': self.last_buy_step,
+                'current_step': self.current_step
+            }
 
         total_reward = 0
         actions_taken = []
@@ -408,47 +457,64 @@ class DDQNTradingAgent:
                 state = torch.FloatTensor(sample['state']).unsqueeze(0).to(self.device)
 
                 # Compute Q-values for all actions
-                q_values = self.q_network(state).cpu().numpy().flatten()  # Shape: [3] for SELL, HOLD, BUY
+                q_values = self.q_network(state).cpu().numpy().flatten()
 
-                # Get action with position management
-                action, raw_action = self.get_action_with_position_management(sample['state'], training=False)
-
-                # Check if this was a constraint violation
-                if (raw_action == 0 and self.current_position == 1 and
-                        self.current_step - self.last_buy_step < 2):
-                    constraint_violations += 1
-
-                # Calculate reward
-                reward = self.calculate_reward(
-                    action,
-                    sample['current_price'],
-                    sample['next_price'],
-                    sample.get('y_pred'),
-                    sample.get('future_returns')
+                # Get action with position management using explicit position state
+                action, raw_action = self.get_action_with_position_management(
+                    sample['state'],
+                    training=False,
+                    position_state=position_state
                 )
 
-                # Update position
-                self.update_position(action)
+                # Check if this was a constraint violation
+                if (raw_action == 0 and position_state['position'] == 1 and
+                        position_state['current_step'] - position_state['last_buy_step'] < 2):
+                    constraint_violations += 1
 
-                total_reward += reward
+                # Only calculate reward if explicitly requested
+                reward = 0.0
+                if calculate_rewards:
+                    reward = self.calculate_reward(
+                        action,
+                        sample['current_price'],
+                        sample['next_price'],
+                        sample.get('y_pred'),
+                        sample.get('future_returns')
+                    )
+                    total_reward += reward
+
+                # Update position state (functional approach - no side effects)
+                position_state = self.update_position_state(action, position_state)
+
                 actions_taken.append(action)
 
                 # Log action and Q-values
-                action_log.append({
+                log_entry = {
                     'date': sample.get('date'),
                     'symbol': sample.get('symbol'),
                     'action': action,
                     'action_name': self.action_names[action],
-                    'position': self.current_position,
+                    'position': position_state['position'],
                     'price': sample.get('current_price'),
-                    'reward': reward,
+                    'next_price': sample.get('next_price'),
                     'raw_action': raw_action,
-                    'days_since_buy': self.current_step - self.last_buy_step,
-                    'q_values': q_values.tolist(),  # Q-values for SELL, HOLD, BUY
-                    'estimated_q_value': q_values[raw_action]  # Q-value of the raw action
-                })
+                    'days_since_buy': position_state['current_step'] - position_state['last_buy_step'],
+                    'q_values': q_values.tolist(),
+                    'estimated_q_value': q_values[raw_action]
+                }
 
-        avg_reward = total_reward / len(rl_samples) if rl_samples else 0.0
+                if calculate_rewards:
+                    log_entry['reward'] = reward
+
+                action_log.append(log_entry)
+
+        # Update internal state if not resetting (for continuing sequences)
+        if not reset_position:
+            self.current_position = position_state['position']
+            self.last_buy_step = position_state['last_buy_step']
+            self.current_step = position_state['current_step']
+
+        avg_reward = total_reward / len(rl_samples) if rl_samples and calculate_rewards else 0.0
 
         action_dist = {
             'SELL': actions_taken.count(0),
@@ -457,20 +523,41 @@ class DDQNTradingAgent:
         }
 
         print(f"Evaluation Results:")
-        print(f"Total Reward: {total_reward:.4f}")
-        print(f"Average Reward: {avg_reward:.4f}")
+        if calculate_rewards:
+            print(f"Total Reward: {total_reward:.4f}")
+            print(f"Average Reward: {avg_reward:.4f}")
+        else:
+            print("Pure inference mode - no rewards calculated")
         print(f"Action Distribution: {action_dist}")
-        print(f"Final Position: {self.current_position}")
+        print(f"Final Position: {position_state['position']}")
         print(f"Constraint Violations: {constraint_violations}")
 
-        return {
-            'total_reward': total_reward,
-            'average_reward': avg_reward,
+        result = {
             'action_distribution': action_dist,
             'action_log': action_log,
-            'final_position': self.current_position,
-            'constraint_violations': constraint_violations
+            'final_position': position_state['position'],
+            'constraint_violations': constraint_violations,
+            'final_position_state': position_state  # NEW: Return position state for continuation
         }
+
+        if calculate_rewards:
+            result.update({
+                'total_reward': total_reward,
+                'average_reward': avg_reward
+            })
+
+        return result
+
+    def predict_single(self, sample, continue_sequence=False):
+        """
+        Make a single prediction - useful for real-time inference
+
+        Args:
+            sample: Single RL sample
+            continue_sequence: If True, continues from last position state
+        """
+        result = self.evaluate([sample], calculate_rewards=False, reset_position=not continue_sequence)
+        return result['action_log'][0]
 
     def save_model(self, filepath):
         """Save model state"""
@@ -480,9 +567,9 @@ class DDQNTradingAgent:
             'optimizer_state_dict': self.optimizer.state_dict(),
             'epsilon': self.epsilon,
             'step_count': self.step_count,
-            'current_position': self.current_position,
-            'last_buy_step': self.last_buy_step,  # NEW
-            'current_step': self.current_step  # NEW
+            'current_position': getattr(self, 'current_position', 0),
+            'last_buy_step': getattr(self, 'last_buy_step', -999),
+            'current_step': getattr(self, 'current_step', 0)
         }, filepath)
         print(f"Model saved to {filepath}")
 
@@ -494,7 +581,8 @@ class DDQNTradingAgent:
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.epsilon = checkpoint['epsilon']
         self.step_count = checkpoint['step_count']
-        self.current_position = checkpoint.get('current_position', 0)
-        self.last_buy_step = checkpoint.get('last_buy_step', -999)  # NEW
-        self.current_step = checkpoint.get('current_step', 0)  # NEW
+
+        # Initialize position state
+        self.reset_position_state()
+
         print(f"Model loaded from {filepath}")

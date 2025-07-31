@@ -5,7 +5,7 @@ import logging
 from src.load_data import fetch_stock_data
 from src.feature_engineering import load_data_pooled
 from model.dual_transformer import *
-from gulu_train_test_scripts.train_test_dual_transformer import *
+from train_test_scripts.train_test_dual_transformer import *
 
 # Set up basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

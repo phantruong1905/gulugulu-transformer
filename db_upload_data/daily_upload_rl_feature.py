@@ -87,19 +87,26 @@ class ProductionStockInference:
                 os.remove(pooled_path)
 
     def _upload_current_raw_data(self, df: pd.DataFrame, ticker: str, current_date: str):
-        """Upload only current date raw data to database (basic OHLCV only)"""
+        """Upload only current date raw data to database (replace if exists)"""
         # Get only current date data
         current_data = df[df['Date'] == current_date].copy()
 
         if not current_data.empty:
+            # Delete existing raw data for this symbol and date if it exists
+            with self.engine.begin() as conn:
+                conn.execute(
+                    text('DELETE FROM raw_stock_data WHERE "Symbol" = :symbol AND "Date" = :date'),
+                    {"symbol": ticker, "date": current_date}
+                )
+
             # Select only basic OHLCV columns for raw_stock_data table
             raw_columns = ['Date', 'Symbol', 'Open', 'High', 'Low', 'Adj Close', 'Volume']
             raw_data = current_data[raw_columns].copy()
 
-            # Upload to raw_stock_data table (append mode)
+            # Upload to raw_stock_data table (append mode after deletion)
             raw_data.to_sql("raw_stock_data", self.engine, if_exists="append",
                             index=False, method='multi', chunksize=100)
-            print(f"✅ Uploaded raw data for {ticker} on {current_date}")
+            print(f"✅ Uploaded/Updated raw data for {ticker} on {current_date}")
 
     def _prepare_features_for_inference(self, df_filtered: pd.DataFrame, current_date: str) -> dict:
         """Prepare features for inference using the exact same logic as training"""
@@ -203,11 +210,22 @@ class ProductionStockInference:
         return feature_row
 
     def _upload_features(self, feature_row: dict):
-        """Upload feature row to database"""
+        """Upload feature row to database (replace if exists)"""
+        ticker = feature_row['symbol']
+        date = feature_row['date']
+
+        # Delete existing row for this symbol and date if it exists
+        with self.engine.begin() as conn:
+            conn.execute(
+                text("DELETE FROM stock_features WHERE symbol = :symbol AND date = :date"),
+                {"symbol": ticker, "date": date}
+            )
+
+        # Insert new row
         df_features = pd.DataFrame([feature_row])
         df_features.to_sql("stock_features", self.engine, if_exists="append",
                            index=False, method='multi', chunksize=100)
-        print(f"✅ Uploaded features for {feature_row['symbol']} on {feature_row['date']}")
+        print(f"✅ Uploaded/Updated features for {ticker} on {date}")
 
     def run_inference(self, ticker: str, current_date: str):
         """Main inference pipeline for a single stock"""
@@ -250,7 +268,7 @@ def run_production_inference(ticker: str, current_date: str = None):
 
     # Database connection
     db_connection = "postgresql+psycopg2://phantronbeo:Truong15397298@gulugulu-db.c9i0iiackcds.ap-southeast-2.rds.amazonaws.com/postgres"
-    checkpoint_path = "../trained_wavelet_model.pt"
+    checkpoint_path = "trained_wavelet_model.pt"
 
     # Initialize inference pipeline
     inference = ProductionStockInference(checkpoint_path, db_connection)
@@ -268,7 +286,7 @@ def run_production_inference_batch(tickers: list, current_date: str = None):
 
     # Database connection
     db_connection = "postgresql+psycopg2://phantronbeo:Truong15397298@gulugulu-db.c9i0iiackcds.ap-southeast-2.rds.amazonaws.com/postgres"
-    checkpoint_path = "../trained_wavelet_model.pt"
+    checkpoint_path = "trained_wavelet_model.pt"
 
     # Initialize inference pipeline once for all stocks
     inference = ProductionStockInference(checkpoint_path, db_connection)
@@ -324,70 +342,4 @@ def print_batch_results(results: dict):
         else:
             print(f"❌ {ticker:6s}: {result['error']}")
 
-
-# Example usage
-if __name__ == "__main__":
-
-    # Multiple stocks
-    stock_list = [
-        # Ngân hàng – Tài chính
-        'CTG', 'MBB', 'TCB', 'MSB', 'BID', 'EIB', 'LPB', 'OCB', 'NAB', 'VAB', 'SHB', 'VPB', 'ABB', 'STB', 'ACB', 'KLB',
-
-        # Bất động sản – KCN – Hạ tầng
-        'DXG', 'KDH', 'HDG', 'NLG', 'IDC', 'KBC', 'DPG',
-        'SZC', 'BCM', 'NTC', 'SIP', 'KHG', 'NTL', 'HHS', 'VCG', 'HDC', 'TCH',
-
-        # Bán lẻ – Tiêu dùng
-        'MWG', 'DGW', 'PNJ', 'FRT', 'VHC', 'ANV', 'NKG', 'MCH', 'MSN',
-        'MSH',
-
-        # Công nghiệp – Hóa chất – VLXD
-        'DGC', 'GVR', 'HSG', 'HPG', 'DPM', 'DCM', 'BFC', 'CSV', 'GEX', 'REE', 'GEG', 'NT2', 'BMP',
-
-        # Dầu khí
-        'PVS', 'GEE', 'PLC',
-
-        # Công nghệ – Viễn thông
-        'CTR', 'ELC', 'VGI', 'VTP', 'TLG', 'FOX',
-
-        # Nông nghiệp – Thực phẩm
-        'PAN', 'DBC', 'QNS',
-
-        # Chứng khoán
-        'VIX', 'VCI', 'HCM', 'MBS', 'VDS', 'TVS', 'BSI', 'FTS', 'SSI', 'CTS', 'SHS',
-
-        # Khác – Lẻ tiềm năngL
-        'HAH', 'SCS', 'PHP', 'TNG', 'TDT', 'AST', 'VSC', 'KOS', 'NAF', 'DGC', 'NTP', 'CMG', 'VGS', 'FCN', 'VOS',
-
-        # Dệt may
-        'TCM', 'MSH', 'GIL', 'TNG',
-
-        # Cao su
-        'PHR', 'DRC', 'TRC', 'DPR',
-
-        # Tải
-        'GMD',
-
-        # VN30
-        'HPG', 'VRE', 'VIC', 'VHM',
-
-        # Thêm bừa không biết ngành gì
-        'AGG', 'EVG', 'IJC', 'HAG', 'DXS', 'EVF', 'VTO', 'CTD', 'CTI', 'HHV', 'DDV', 'HNG', 'MCH', 'HVN'
-    ]
-
-    current_date = "2025-07-21"  # or use None for today
-
-    # Run batch inference
-    results = run_production_inference_batch(stock_list, current_date)
-
-    # Print summary
-    print_batch_results(results)
-
-    # Access individual results
-    for ticker in stock_list:
-        if results[ticker]['status'] == 'success':
-            predictions = results[ticker]['predictions']
-            print(f"\n{ticker} predictions: {predictions}")
-        else:
-            print(f"\n{ticker} failed: {results[ticker]['error']}")
 

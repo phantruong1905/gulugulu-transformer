@@ -11,7 +11,7 @@ import pickle
 from model.ddqn_rl import *
 
 # Training function
-def train_trading_agent(train_samples, test_samples=None, epochs=30):
+def train_trading_agent(train_samples, epochs=30):
     """Train improved DDQN trading agent"""
 
     if not train_samples or len(train_samples) == 0:
@@ -22,14 +22,8 @@ def train_trading_agent(train_samples, test_samples=None, epochs=30):
     state_size = len(train_samples[0]['state'])
     print(f"State size: {state_size}")
 
-    # Split data if needed
-    if test_samples is None:
-        train_size = int(0.8 * len(train_samples))
-        test_samples = train_samples[train_size:]
-        train_samples = train_samples[:train_size]
 
     print(f"Training samples: {len(train_samples)}")
-    print(f"Test samples: {len(test_samples)}")
 
     # Create improved agent
     agent = DDQNTradingAgent(
@@ -47,11 +41,7 @@ def train_trading_agent(train_samples, test_samples=None, epochs=30):
     print("\nStarting training...")
     losses = agent.train_on_data(train_samples, epochs=epochs)
 
-    # Evaluate
-    print("\nEvaluating on test data...")
-    test_results = agent.evaluate(test_samples)
-
-    return agent, losses, None, test_results
+    return agent, losses, None
 
 
 # Example usage with your prepared data
@@ -61,16 +51,12 @@ if __name__ == "__main__":
         with open("C:/Users/PC/PycharmProjects/GILIGILI_RL/data/train_rl_data.pkl", "rb") as f:
             train_data = pickle.load(f)
 
-        with open("C:/Users/PC/PycharmProjects/GILIGILI_RL/data/test_rl_data.pkl", "rb") as f:
-            test_data = pickle.load(f)
-
-        print(f"Loaded {len(train_data)} training samples and {len(test_data)} test samples")
+        print(f"Loaded {len(train_data)} training samples")
 
         # Train the agent
-        agent, losses, train_results, test_results = train_trading_agent(
+        agent, losses, train_results = train_trading_agent(
             train_samples=train_data,
-            test_samples=test_data,
-            epochs=100
+            epochs=200
         )
 
         # Save the trained model
