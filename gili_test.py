@@ -499,9 +499,7 @@ def main():
     test_data_path = "C:/Users/PC/PycharmProjects/GILIGILI_RL/data/test_rl_data.pkl"
 
     # Database connection (for price fetching)
-    engine = create_engine(
-        "postgresql+psycopg2://phantronbeo:Truong15397298@gulugulu-db.c9i0iiackcds.ap-southeast-2.rds.amazonaws.com/postgres"
-    )
+    engine = create_engine(...)
 
     # === Load test samples ===
     print("Loading test data...")

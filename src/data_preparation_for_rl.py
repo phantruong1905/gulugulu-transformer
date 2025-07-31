@@ -130,7 +130,7 @@ def prepare_rl_data(engine, table_name='stock_features'):
     test_samples = preprocessor.create_rl_samples(test_df_normalized)
 
     # Save normalization stats for future use
-    with open("/data/scaling_stats.pkl", "wb") as f:
+    with open("C:/Users/PC/PycharmProjects/GILIGILI_RL/data/scaling_stats.pkl", "wb") as f:
         pickle.dump(preprocessor.scaling_stats, f)
 
     # Show stats
@@ -147,16 +147,14 @@ def prepare_rl_data(engine, table_name='stock_features'):
 
 
 if __name__ == "__main__":
-    engine = create_engine(
-        "postgresql+psycopg2://phantronbeo:Truong15397298@gulugulu-db.c9i0iiackcds.ap-southeast-2.rds.amazonaws.com/postgres"
-    )
+    engine = create_engine(...)
 
     train_data, test_data = prepare_rl_data(engine, table_name='stock_features')
 
-    with open("/data/train_rl_data.pkl", "wb") as f:
+    with open("C:/Users/PC/PycharmProjects/GILIGILI_RL/data/train_rl_data.pkl", "wb") as f:
         pickle.dump(train_data, f)
 
-    with open("/data/test_rl_data.pkl", "wb") as f:
+    with open("C:/Users/PC/PycharmProjects/GILIGILI_RL/data/test_rl_data.pkl", "wb") as f:
         pickle.dump(test_data, f)
 
     print(f"✅ Train: {len(train_data)}, Test: {len(test_data)}")
